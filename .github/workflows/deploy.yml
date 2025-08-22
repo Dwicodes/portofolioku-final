@@ -1,0 +1,108 @@
+name: Deploy Laravel to CyberPanel
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🚀 Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: 🐘 Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        extensions: mbstring, xml, bcmath, pdo, mysql, zip, intl
+    
+    - name: 📦 Get Composer Cache Directory
+      id: composer-cache
+      run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+    
+    - name: 🔄 Cache Composer Dependencies
+      uses: actions/cache@v3
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+        restore-keys: ${{ runner.os }}-composer-
+    
+    - name: 📥 Install Composer Dependencies
+      run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+    
+    - name: 📄 Create .env file for testing
+      run: |
+        cp .env.example .env
+        php artisan key:generate
+    
+    - name: 🧪 Run Tests
+      run: |
+        php artisan config:clear
+        php artisan cache:clear
+        # php artisan test # Uncomment jika ada tests
+    
+    - name: 🚀 Deploy to CyberPanel Server
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_KEY }}
+        port: ${{ secrets.PORT }}
+        script: |
+          echo "🔄 Starting deployment..."
+          
+          # Masuk ke direktori website
+          cd ${{ secrets.TARGET_PATH }}
+          
+          # Backup current deployment
+          echo "📦 Creating backup..."
+          sudo cp -r . ../backup_$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+          
+          # Pull latest changes
+          echo "📥 Pulling latest code..."
+          git pull origin main
+          
+          # Install/Update Composer dependencies
+          echo "📦 Installing dependencies..."
+          composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+          
+          # Update .env with production values
+          echo "⚙️ Updating environment..."
+          sed -i "s/DB_HOST=.*/DB_HOST=${{ secrets.DB_HOST }}/" .env
+          sed -i "s/DB_DATABASE=.*/DB_DATABASE=${{ secrets.DB_DATABASE }}/" .env
+          sed -i "s/DB_USERNAME=.*/DB_USERNAME=${{ secrets.DB_USERNAME }}/" .env
+          sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${{ secrets.DB_PASSWORD }}/" .env
+          sed -i "s/APP_ENV=.*/APP_ENV=production/" .env
+          sed -i "s/APP_DEBUG=.*/APP_DEBUG=false/" .env
+          
+          # Generate application key if not exists
+          echo "🔑 Checking application key..."
+          if ! grep -q "APP_KEY=base64:" .env; then
+            php artisan key:generate --force
+          fi
+          
+          # Run database migrations
+          echo "🗄️ Running migrations..."
+          php artisan migrate --force
+          
+          # Clear all caches
+          echo "🧹 Clearing caches..."
+          php artisan config:clear
+          php artisan cache:clear
+          php artisan route:clear
+          php artisan view:clear
+          
+          # Optimize application
+          echo "⚡ Optimizing application..."
+          php artisan config:cache
+          php artisan route:cache
+          php artisan view:cache
+          
+          # Set correct permissions
+          echo "🔐 Setting permissions..."
+          sudo chmod -R 755 storage bootstrap/cache
+          sudo chown -R www-data:www-data storage bootstrap/cache
+          
+          echo "✅ Deployment completed successfully!"
